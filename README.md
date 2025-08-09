@@ -11,7 +11,6 @@ Upload a picture, and the app analyzes its vibe (mood, setting, context) using a
 ## ⚙️ Local Setup
 
 1) Clone & create a virtual environment
-```bash
 git clone https://github.com/Sameeh07/Music-Recommendation-System-MUSREC.git
 cd <repo>
 python -m venv .venv
