@@ -290,3 +290,8 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", "7860"))
     )
+
+# for local deployment
+# if __name__ == "__main__":
+#     os.environ["GRADIO_DISABLE_BROTLI"] = "1"  
+#     demo.launch()
