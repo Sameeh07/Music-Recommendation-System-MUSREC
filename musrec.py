@@ -39,6 +39,7 @@ SYSTEM_PROMPT = (
     "   or highest-quality audio/video on YouTube (include film or album when known).\n"
     "4) Never include lyrics; avoid copyrighted text.\n"
     "5) Keep 'reasoning' to 1–2 sentences about how the image (and optional notes) informed the selection.\n"
+    "6) Only new songs (post 2000 era), no old songs. \n"
 )
 
 # ---------------------------
@@ -265,7 +266,8 @@ def ui_infer(image: Image.Image, user_notes: str) -> str:
 with gr.Blocks(title="Music Recommendation System") as demo:
     gr.Markdown("""
     # 🎬 MusRec
-    Upload an image. We'll analyze the vibe and recommend Hindi/Bollywood song — with a player so you can listen right away (via YouTube).
+    Not sure what song fits your Insta story? Upload a pic to MUSREC.
+It reads the mood and recommends a Bollywood track you can play right away.
     """)
 
     with gr.Row():
