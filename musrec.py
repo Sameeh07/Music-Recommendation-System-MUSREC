@@ -267,7 +267,7 @@ def ui_infer(image: Image.Image, user_notes: str) -> str:
 with gr.Blocks(title="Music Recommendation System") as demo:
     gr.Markdown("""
     # 🎬 MusRec
-    Not sure what song fits your Insta story? Upload a pic to MUSREC.
+Not sure what song fits your Insta story? Upload a pic to MUSREC.
 It reads the mood and recommends a Bollywood track you can play right away.
     """)
 
