@@ -1,9 +1,8 @@
-
-
 import os
 import json
 import base64
 import html
+import re
 from urllib.parse import quote_plus
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
@@ -52,82 +51,162 @@ def encode_image_to_b64(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def fetch_best_youtube_video_id(query: str) -> Optional[str]:
+@dataclass
+class Song:
+    title: str
+    artist: str
+    film_or_album: str
+    year: int
+    vibe_tags: List[str]
+    yt_search_query: str
+
+
+# ---------- YouTube matching that respects title + artist + film ----------
+
+PREFERRED_CHANNEL_KEYWORDS = [
+    "T-Series", "Zee Music", "Sony Music", "YRF", "Saregama",
+    "Tips Official", "Eros", "Dharma", "SVF", "Shemaroo", "Junglee Music",
+]
+
+PENALTY_TERMS = [
+    "cover", "slowed", "sped", "sped up", "8d", "nightcore", "remix",
+    "dance", "status", "shorts", "live", "edit", "reverb", "lofi",
+]
+
+BOOST_TERMS = [
+    "official", "video", "audio", "lyric"
+]
+
+def _norm_text(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+def _tokens_for_song(song: Song) -> List[str]:
+    parts = []
+    if song.title: parts += song.title.split()
+    if song.artist: parts += song.artist.split()
+    if song.film_or_album: parts += song.film_or_album.split()
+    toks = [_norm_text(t) for t in parts if t]
+    seen, out = set(), []
+    for t in toks:
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+def _score_candidate(song: Song, video_title: str, channel_title: str) -> int:
+    vt = _norm_text(video_title)
+    ct = (channel_title or "").lower()
+
+    score = 0
+
+    # Strong boost if full song title appears as a phrase
+    if _norm_text(song.title) and _norm_text(song.title) in vt:
+        score += 5
+
+    # Token coverage from title/artist/film
+    tokens = _tokens_for_song(song)
+    score += sum(1 for t in tokens if t and t in vt)
+
+    # Prefer official label channels
+    if any(k.lower() in ct for k in (kw.lower() for kw in PREFERRED_CHANNEL_KEYWORDS)):
+        score += 4
+
+    # Boost likely official/audio/lyric content
+    score += sum(1 for b in BOOST_TERMS if b in vt)
+
+    # Penalize derivatives/covers/edits
+    score -= sum(2 for p in PENALTY_TERMS if p in vt)
+
+    return score
+
+def fetch_best_youtube_video_id_for_song(song: Song) -> Optional[str]:
     """
-    Use YouTube Data API to find a likely embeddable, region-available video for the query.
-    Tries multiple candidate queries; returns a videoId or None.
+    Use YouTube Data API to find the best embeddable video matching the specific song.
+    Searches with title+artist+film, scores candidates, and returns a videoId.
     """
     api_key = os.getenv("YOUTUBE_API_KEY")
     if not api_key:
-        return None  # No key -> we'll fallback to search playlist embed
+        return None
 
-    candidate_queries = [
-        query,
-        f"{query} official video",
-        f"{query} audio",
-        f"{query} lyric video",
-        f"{query} jukebox",
+    base_q = " ".join(x for x in [song.title, song.artist, song.film_or_album] if x).strip()
+    if not base_q:
+        base_q = song.yt_search_query or ""
+
+    queries = [
+        base_q,
+        f"{base_q} official video",
+        f"{base_q} audio",
+        f"{base_q} lyric video",
     ]
 
-    for q in candidate_queries:
-        try:
+    try:
+        for q in queries:
+            # Need title+channel for scoring => part=snippet
             search_url = "https://www.googleapis.com/youtube/v3/search"
             params = {
                 "key": api_key,
                 "q": q,
-                "part": "id",
+                "part": "snippet",
                 "type": "video",
-                "maxResults": 10,
+                "maxResults": 12,
                 "videoEmbeddable": "true",
                 "regionCode": "IN",
                 "relevanceLanguage": "hi",
                 "order": "relevance",
                 "safeSearch": "none",
             }
-            resp = requests.get(search_url, params=params, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+            sresp = requests.get(search_url, params=params, timeout=10)
+            sresp.raise_for_status()
+            sdata = sresp.json()
             candidates = [
-                item["id"]["videoId"]
-                for item in data.get("items", [])
+                (
+                    item["id"]["videoId"],
+                    item["snippet"]["title"],
+                    item["snippet"].get("channelTitle", "")
+                )
+                for item in sdata.get("items", [])
                 if item.get("id", {}).get("videoId")
             ]
             if not candidates:
                 continue
 
+            # Verify embeddable (extra safety)
             videos_url = "https://www.googleapis.com/youtube/v3/videos"
             vparams = {
                 "key": api_key,
-                "id": ",".join(candidates),
+                "id": ",".join([vid for vid, _, _ in candidates]),
                 "part": "status",
             }
             vresp = requests.get(videos_url, params=vparams, timeout=10)
             vresp.raise_for_status()
             vdata = vresp.json()
+            emb_ok = {it["id"]: it["status"].get("embeddable", True) for it in vdata.get("items", [])}
 
-            for item in vdata.get("items", []):
-                vid = item.get("id")
-                status = item.get("status", {})
-                if status.get("embeddable", True):
-                    return vid
+            # Score and pick best
+            best_vid, best_score = None, -10**9
+            for vid, title, ch in candidates:
+                if not emb_ok.get(vid, True):
+                    continue
+                sc = _score_candidate(song, title, ch)
+                if sc > best_score:
+                    best_vid, best_score = vid, sc
 
-            return candidates[0]
+            if best_vid:
+                return best_vid
 
-        except Exception:
-            continue
+    except Exception:
+        pass
 
     return None
 
-
-def build_youtube_iframe(search_query: str, height: int = 360) -> str:
+def build_youtube_iframe_for_song(song: Song, height: int = 360) -> str:
     """
-    Prefer a specific videoId via YouTube Data API;
-    fallback to search playlist embed and always show a direct link.
+    Prefer a specific videoId chosen using structured song fields; fall back to a search playlist.
     """
-    video_id = fetch_best_youtube_video_id(search_query)
-    if video_id:
-        src = f"https://www.youtube.com/embed/{video_id}?rel=0"
-        link = f"https://www.youtube.com/watch?v={video_id}"
+    vid = fetch_best_youtube_video_id_for_song(song)
+    if vid:
+        src = f"https://www.youtube.com/embed/{vid}?rel=0"
+        link = f"https://www.youtube.com/watch?v={vid}"
         return f'''
         <div style="margin: 8px 0;">
           <iframe width="100%" height="{height}" src="{src}" title="YouTube player"
@@ -138,7 +217,8 @@ def build_youtube_iframe(search_query: str, height: int = 360) -> str:
           </div>
         </div>
         '''
-    q = quote_plus(search_query)
+    # Last resort: search playlist for structured query
+    q = quote_plus(" ".join(x for x in [song.title, song.artist, song.film_or_album, "Bollywood"] if x))
     src = f"https://www.youtube.com/embed?listType=search&list={q}&autoplay=0&rel=0"
     return f'''
     <div style="margin: 8px 0;">
@@ -150,17 +230,6 @@ def build_youtube_iframe(search_query: str, height: int = 360) -> str:
       </div>
     </div>
     '''
-
-
-@dataclass
-class Song:
-    title: str
-    artist: str
-    film_or_album: str
-    year: int
-    vibe_tags: List[str]
-    yt_search_query: str
-
 
 # ---------------------------
 # Core LLM Call
@@ -224,7 +293,6 @@ def groq_analyze_and_recommend(image_path: str, user_notes: str = "") -> Tuple[s
 
     return mood, ", ".join(keywords), reasoning, song
 
-
 # ---------------------------
 # Gradio UI Logic
 # ---------------------------
@@ -246,8 +314,6 @@ def ui_infer(image: Image.Image, user_notes: str) -> str:
         subtitle += f" ({s.film_or_album}, {s.year or ''})"
     tags = ", ".join(s.vibe_tags)
 
-    q = (s.yt_search_query or f"{s.title} {s.artist} {s.film_or_album} Bollywood audio").strip()
-
     blocks = [
         f"""
         <div style='line-height:1.5'>
@@ -258,23 +324,22 @@ def ui_infer(image: Image.Image, user_notes: str) -> str:
         """,
         f"<h4 style='margin:12px 0 4px;'>{html.escape(subtitle)}</h4>"
         f"<div style='color:#555;font-size:0.95rem;margin:0 0 6px;'>Vibe: {html.escape(tags)}</div>",
-        build_youtube_iframe(q),
+        build_youtube_iframe_for_song(s),
     ]
 
     return "\n".join(blocks)
 
-
 with gr.Blocks(title="Music Recommendation System") as demo:
     gr.Markdown("""
     # 🎬 MusRec
-Not sure what song fits your Insta story? Upload a pic to MUSREC.
-It reads the mood and recommends a Bollywood track you can play right away.
+    Not sure what song fits your Insta story? Upload a pic to MUSREC.
+    It reads the mood and recommends a Bollywood track you can play right away.
     """)
 
     with gr.Row():
         img = gr.Image(label="Upload a photo", type="pil")
         notes = gr.Textbox(
-            label="Prompt: e.g., 'monsoon romantic', 'party vibe', '90s nostalgia')",
+            label="Prompt (e.g., 'monsoon romantic', 'party vibe', '90s nostalgia')",
             placeholder="Add any hints you want the model to consider (optional)"
         )
 
@@ -288,13 +353,8 @@ It reads the mood and recommends a Bollywood track you can play right away.
     clear_btn.click(lambda: "<p>Upload an image to begin.</p>", inputs=[], outputs=[html_out])
 
 if __name__ == "__main__":
-    os.environ["GRADIO_DISABLE_BROTLI"] = "1"  
+    os.environ["GRADIO_DISABLE_BROTLI"] = "1"  # avoid rare Windows stack bug locally
     demo.launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", "7860"))
     )
-
-# for local deployment
-# if __name__ == "__main__":
-#     os.environ["GRADIO_DISABLE_BROTLI"] = "1"  
-#     demo.launch()
