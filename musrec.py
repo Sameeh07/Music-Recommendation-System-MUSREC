@@ -40,6 +40,7 @@ SYSTEM_PROMPT = (
     "4) Never include lyrics; avoid copyrighted text.\n"
     "5) Keep 'reasoning' to 1–2 sentences about how the image (and optional notes) informed the selection.\n"
     "6) Only new songs (post 2000 era), no old songs. \n"
+    "7) Make sure it's a hindi/bollywood song, not any other video. \n"
 )
 
 # ---------------------------
